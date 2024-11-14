@@ -1,14 +1,19 @@
-# Cloud Backup System
+# Azure Storage Backup to Google Drive
 
-A system for backing up Azure Storage to Google Drive and restoring when needed.
+Automated system to backup Azure Storage containers to Google Drive and restore when needed.
 
-## Components
+## Prerequisites
 
-1. **token-generator**: Generates Google Drive OAuth token
-2. **backup-service**: Automated backup from Azure Storage to Google Drive
-3. **restore-service**: Restore from Google Drive to target Azure Storage
+1. Azure Storage Account:
+- Account Name
+- Account Key
+- Container Name(s)
 
-## Setup
+2. Google Drive:
+- Shared Drive set up
+- OAuth 2.0 Client ID credentials
+
+## Setup Google Drive Access
 
 ### 1. Google Drive Credentials Setup
 
@@ -54,12 +59,30 @@ To create `credentials.json`:
 
 ### 3. Environment Configuration
 
+1. Environment setup:
 ```bash
-# Copy example environment file
 cp .env.example .env
+```
 
-# Edit .env with your configuration
-vim .env
+2. Configure .env:
+```bash
+# Source Azure (for backup)
+AZURE_ACCOUNT_NAME=source_account
+AZURE_ACCOUNT_KEY=source_key
+AZURE_CONTAINER_NAME=ALL  # "ALL" or specific container
+
+# Target Azure (for restore)
+TARGET_AZURE_ACCOUNT_NAME=target_account
+TARGET_AZURE_ACCOUNT_KEY=target_key
+TARGET_AZURE_CONTAINER_NAME=ALL
+
+# Google Drive
+GOOGLE_SHARED_DRIVE_ID=your_drive_id
+GOOGLE_FOLDER_ID=optional_folder_id
+
+# Backup Schedule (cron format)
+BACKUP_SCHEDULE="0 1 * * *"  # 1 AM daily
+BACKUP_RETENTION_DAYS=7
 ```
 
 ### 4. Generate Google Drive Token
@@ -78,84 +101,93 @@ docker-compose run --rm token-generator
 ### 5. Start Backup Service
 
 ```bash
-# Start backup service
+# Run backup service (follows schedule)
 docker-compose up -d backup-service
+
+# Check logs
+docker-compose logs -f backup-service
 ```
 
 ### 6. Restore When Needed
 
 ```bash
-# Restore latest backup
+# Latest backup
 docker-compose run --rm restore-service
 
-# Or restore from specific date
-docker-compose run --rm restore-service ./restore-service -date="2023-11-14"
-```
+# Specific date
+docker-compose run --rm restore-service -date="2023-11-14"
 
-## Configuration
-
-### Environment Variables
-
-See `.env.example` for all available configuration options.
-
-### Backup Schedule
-
-Default schedule is daily at 1 AM. Modify `BACKUP_SCHEDULE` to change.
-
-### Retention Policy
-
-Backups are kept for 7 days by default. Modify `BACKUP_RETENTION_DAYS` to change.
-
-## Architecture
-
-- Uses incremental backup to minimize storage and bandwidth
-- Compresses files before upload
-- Concurrent operations for better performance
-- Automatic cleanup of old backups
-- Health monitoring
-
-## Troubleshooting
-
-### Common Issues
-
-1. Token Generation Fails:
-   - Ensure `credentials.json` has correct format
-   - Check if Google Drive API is enabled
-   - Verify OAuth consent screen configuration
-   - Make sure you're using correct Google account
-
-2. Backup Service Issues:
-   - Check Azure credentials
-   - Verify container permissions
-   - Check available disk space
-   - Review service logs
-
-3. Restore Service Issues:
-   - Verify target Azure storage credentials
-   - Check Google Drive permissions
-   - Ensure sufficient disk space for temporary files
-
-### Logs
-
-```bash
-# View backup service logs
-docker-compose logs -f backup-service
-
-# View restore service logs
+# Check logs
 docker-compose logs restore-service
 ```
 
-## Security Notes
+## Backup Features
 
-1. Credentials:
-   - Keep `credentials.json` and `token.json` secure
-   - Don't commit these files to git
-   - Use appropriate file permissions
+- Incremental backup (only changed files)
+- Multiple containers support
+- Compression before upload
+- Retention policy
+- Progress tracking
+- Detailed logging
+- Automatic cleanup
 
-2. Azure Storage:
-   - Use separate storage accounts for source and target
-   - Configure appropriate CORS settings if needed
-   - Use least privilege access principles
+## Restore Features
+
+- Full or specific container restore
+- Date-based restore
+- Automatic container creation
+- Concurrent file processing
+- Progress monitoring
+- Atomic operations
+
+## Logging
+
+```bash
+# Set log level in .env:
+LOG_LEVEL=debug  # debug, info, warn, error
+
+# View logs:
+docker-compose logs -f backup-service
+docker-compose logs -f restore-service
+```
+
+## Best Practices
+
+1. Security:
+- Use separate storage accounts for backup/restore
+- Rotate access keys regularly
+- Secure credentials.json and token.json
+
+2. Monitoring:
+- Check logs regularly
+- Monitor disk space
+- Verify backup success
+
+3. Testing:
+- Test restore process periodically
+- Verify file integrity
+- Check backup retention
+
+## Troubleshooting
+
+## Troubleshooting
+
+1. Token Issues:
+```bash
+# Regenerate token
+rm token.json
+docker-compose run --rm token-generator
+```
+
+2. Azure Issues:
+- Verify account credentials
+- Check container permissions
+- Ensure sufficient quota
+
+3. Backup Failures:
+- Check source storage access
+- Verify sufficient disk space
+- Review error logs
 
 ## License
 
