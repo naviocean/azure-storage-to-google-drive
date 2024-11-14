@@ -57,7 +57,6 @@ func (s *RestoreService) RestoreFromDate(ctx context.Context, date time.Time) er
 }
 
 func (s *RestoreService) restoreAllContainers(ctx context.Context, date *time.Time) error {
-    // Get available backups
     backups, err := s.driveService.ListAvailableBackups()
     if err != nil {
         return fmt.Errorf("failed to list backups: %v", err)
@@ -67,12 +66,8 @@ func (s *RestoreService) restoreAllContainers(ctx context.Context, date *time.Ti
     containerBackups := make(map[string][]*DriveBackup)
     for _, backup := range backups {
         // Parse container name from backup file name
-        parts := strings.Split(backup.Name, "_backup_")
-        if len(parts) != 2 {
-            s.logger.Warn("Invalid backup file name format: %s", backup.Name)
-            continue
-        }
-        containerName := parts[0]
+        // Example: "assets_20241114_144123.zip"
+        containerName := backup.Name[:strings.Index(backup.Name, "_")]
         containerBackups[containerName] = append(containerBackups[containerName], backup)
     }
 

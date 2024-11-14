@@ -6,6 +6,7 @@ import (
     "net/url"
     "os"
     "path/filepath"
+    "strings"
     "sync"
     "time"
 
@@ -21,9 +22,9 @@ type UploadStats struct {
 }
 
 type AzureService struct {
-    containerURL azblob.ContainerURL
-    config      *config.RestoreServiceConfig
-    logger      *utils.Logger
+    serviceURL azblob.ServiceURL
+    config    *config.RestoreServiceConfig
+    logger    *utils.Logger
 }
 
 func NewAzureService(cfg *config.RestoreServiceConfig, logger *utils.Logger) (*AzureService, error) {
@@ -44,15 +45,14 @@ func NewAzureService(cfg *config.RestoreServiceConfig, logger *utils.Logger) (*A
         },
     })
 
-    URL, _ := url.Parse(fmt.Sprintf("https://%s.blob.core.windows.net/%s",
-        cfg.Azure.AccountName,
-        cfg.Azure.ContainerName))
-    containerURL := azblob.NewContainerURL(*URL, pipeline)
+    URL, _ := url.Parse(fmt.Sprintf("https://%s.blob.core.windows.net/",
+        cfg.Azure.AccountName))
+    serviceURL := azblob.NewServiceURL(*URL, pipeline)
 
     return &AzureService{
-        containerURL: containerURL,
-        config:      cfg,
-        logger:      logger,
+        serviceURL: serviceURL,
+        config:    cfg,
+        logger:    logger,
     }, nil
 }
 
@@ -60,16 +60,22 @@ func (s *AzureService) UploadFiles(ctx context.Context, sourcePath string, conta
     stats := &UploadStats{}
     var mu sync.Mutex
     var wg sync.WaitGroup
-    maxConcurrent := 10 // Default value
+    maxConcurrent := 10
     semaphore := make(chan struct{}, maxConcurrent)
     errChan := make(chan error, 100)
 
-    err := filepath.Walk(sourcePath, func(path string, info os.FileInfo, err error) error {
+    // Create container if not exists
+    containerURL := s.serviceURL.NewContainerURL(containerName)
+    _, err := containerURL.Create(ctx, azblob.Metadata{}, azblob.PublicAccessNone)
+    if err != nil && !strings.Contains(err.Error(), "ContainerAlreadyExists") {
+        return stats, fmt.Errorf("failed to create container: %v", err)
+    }
+
+    err = filepath.Walk(sourcePath, func(path string, info os.FileInfo, err error) error {
         if err != nil {
             return err
         }
 
-        // Skip directories
         if info.IsDir() {
             return nil
         }
@@ -82,10 +88,10 @@ func (s *AzureService) UploadFiles(ctx context.Context, sourcePath string, conta
         wg.Add(1)
         go func() {
             defer wg.Done()
-            semaphore <- struct{}{} // Acquire
-            defer func() { <-semaphore }() // Release
+            semaphore <- struct{}{}
+            defer func() { <-semaphore }()
 
-            if err := s.uploadFile(ctx, path, relPath); err != nil {
+            if err := s.uploadFile(ctx, containerURL, path, relPath); err != nil {
                 errChan <- fmt.Errorf("failed to upload %s: %v", relPath, err)
                 return
             }
@@ -104,7 +110,6 @@ func (s *AzureService) UploadFiles(ctx context.Context, sourcePath string, conta
     wg.Wait()
     close(errChan)
 
-    // Collect errors
     for err := range errChan {
         stats.Errors = append(stats.Errors, err)
     }
@@ -120,20 +125,16 @@ func (s *AzureService) UploadFiles(ctx context.Context, sourcePath string, conta
     return stats, nil
 }
 
-func (s *AzureService) uploadFile(ctx context.Context, sourcePath, blobName string) error {
-    // Create blob URL
-    blobURL := s.containerURL.NewBlockBlobURL(blobName)
+func (s *AzureService) uploadFile(ctx context.Context, containerURL azblob.ContainerURL, sourcePath, blobName string) error {
+    blobURL := containerURL.NewBlockBlobURL(blobName)
 
-    // Open the source file
     file, err := os.Open(sourcePath)
     if err != nil {
         return fmt.Errorf("failed to open source file: %v", err)
     }
     defer file.Close()
 
-    // Upload the file with all required parameters
-    _, err = blobURL.Upload(
-        ctx,
+    _, err = blobURL.Upload(ctx,
         file,
         azblob.BlobHTTPHeaders{},
         azblob.Metadata{},

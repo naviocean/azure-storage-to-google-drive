@@ -6,6 +6,7 @@ import (
     "fmt"
     "io"
     "os"
+    "sort"
     "time"
 
     "golang.org/x/oauth2"
@@ -103,109 +104,8 @@ func loadToken(path string) (*oauth2.Token, error) {
     return token, err
 }
 
-func (s *GoogleDriveService) GetLatestBackup(containerName string) (*DriveBackup, error) {
-    parentID := s.config.GoogleDrive.SharedDriveID
-    if s.config.GoogleDrive.FolderID != "" {
-        parentID = s.config.GoogleDrive.FolderID
-    }
-
-    // Search for backup files for specific container
-    query := fmt.Sprintf(
-        "mimeType='application/zip' and name contains '%s_backup_' and '%s' in parents and trashed=false",
-        containerName, parentID,
-    )
-
-    fileList, err := s.service.Files.List().
-        Q(query).
-        OrderBy("createdTime desc").
-        PageSize(1).
-        SupportsAllDrives(true).
-        IncludeItemsFromAllDrives(true).
-        Corpora("drive").
-        DriveId(s.config.GoogleDrive.SharedDriveID).
-        Fields("files(id, name, createdTime, size)").
-        Do()
-
-    if err != nil {
-        return nil, fmt.Errorf("failed to list backup files: %v", err)
-    }
-
-    if len(fileList.Files) == 0 {
-        return nil, fmt.Errorf("no backup files found for container: %s", containerName)
-    }
-
-    file := fileList.Files[0]
-    createdTime, err := time.Parse(time.RFC3339, file.CreatedTime)
-    if err != nil {
-        return nil, fmt.Errorf("failed to parse creation time: %v", err)
-    }
-
-    return &DriveBackup{
-        ID:          file.Id,
-        Name:        file.Name,
-        CreatedTime: createdTime,
-        Size:        file.Size,
-    }, nil
-}
-
-func (s *GoogleDriveService) GetBackupFromDate(date time.Time, containerName string) (*DriveBackup, error) {
-    parentID := s.config.GoogleDrive.SharedDriveID
-    if s.config.GoogleDrive.FolderID != "" {
-        parentID = s.config.GoogleDrive.FolderID
-    }
-
-    startDate := date.Format("2006-01-02") + "T00:00:00"
-    endDate := date.Add(24*time.Hour).Format("2006-01-02") + "T00:00:00"
-
-    query := fmt.Sprintf(
-        "mimeType='application/zip' and name contains '%s_backup_' and '%s' in parents "+
-        "and createdTime >= '%s' and createdTime < '%s' and trashed=false",
-        containerName, parentID, startDate, endDate,
-    )
-
-    fileList, err := s.service.Files.List().
-        Q(query).
-        OrderBy("createdTime desc").
-        SupportsAllDrives(true).
-        IncludeItemsFromAllDrives(true).
-        Corpora("drive").
-        DriveId(s.config.GoogleDrive.SharedDriveID).
-        Fields("files(id, name, createdTime, size)").
-        Do()
-
-    if err != nil {
-        return nil, fmt.Errorf("failed to list backup files: %v", err)
-    }
-
-    if len(fileList.Files) == 0 {
-        return nil, fmt.Errorf("no backup found for container %s on date %s",
-            containerName, date.Format("2006-01-02"))
-    }
-
-    file := fileList.Files[0]
-    createdTime, err := time.Parse(time.RFC3339, file.CreatedTime)
-    if err != nil {
-        return nil, fmt.Errorf("failed to parse creation time: %v", err)
-    }
-
-    return &DriveBackup{
-        ID:          file.Id,
-        Name:        file.Name,
-        CreatedTime: createdTime,
-        Size:        file.Size,
-    }, nil
-}
-
 func (s *GoogleDriveService) ListAvailableBackups() ([]*DriveBackup, error) {
-    parentID := s.config.GoogleDrive.SharedDriveID
-    if s.config.GoogleDrive.FolderID != "" {
-        parentID = s.config.GoogleDrive.FolderID
-    }
-
-    query := fmt.Sprintf(
-        "mimeType='application/zip' and name contains 'backup_' and '%s' in parents and trashed=false",
-        parentID,
-    )
+    query := "mimeType='application/zip' and trashed=false"
 
     var backups []*DriveBackup
     pageToken := ""
@@ -219,7 +119,7 @@ func (s *GoogleDriveService) ListAvailableBackups() ([]*DriveBackup, error) {
             IncludeItemsFromAllDrives(true).
             Corpora("drive").
             DriveId(s.config.GoogleDrive.SharedDriveID).
-            Fields("nextPageToken, files(id, name, createdTime, size)").
+            Fields("nextPageToken, files(id, name, createdTime, size, parents)").
             Do()
 
         if err != nil {
@@ -227,6 +127,7 @@ func (s *GoogleDriveService) ListAvailableBackups() ([]*DriveBackup, error) {
         }
 
         for _, file := range fileList.Files {
+            // Bỏ check format tên file, chỉ cần file zip
             createdTime, err := time.Parse(time.RFC3339, file.CreatedTime)
             if err != nil {
                 s.logger.Warn("Failed to parse creation time for %s: %v", file.Name, err)
@@ -239,6 +140,10 @@ func (s *GoogleDriveService) ListAvailableBackups() ([]*DriveBackup, error) {
                 CreatedTime: createdTime,
                 Size:        file.Size,
             })
+            s.logger.Debug("Found backup: %s (Created: %s, Size: %s)",
+                file.Name,
+                createdTime.Format(time.RFC3339),
+                formatBytes(file.Size))
         }
 
         pageToken = fileList.NextPageToken
@@ -248,10 +153,132 @@ func (s *GoogleDriveService) ListAvailableBackups() ([]*DriveBackup, error) {
     }
 
     if len(backups) == 0 {
-        return nil, fmt.Errorf("no backup files found")
+        // List all files for debugging
+        allFiles, err := s.service.Files.List().
+            SupportsAllDrives(true).
+            IncludeItemsFromAllDrives(true).
+            Corpora("drive").
+            DriveId(s.config.GoogleDrive.SharedDriveID).
+            Fields("files(id, name, mimeType, parents)").
+            Do()
+        if err != nil {
+            s.logger.Error("Failed to list all files: %v", err)
+        } else {
+            s.logger.Info("Available files in drive:")
+            for _, f := range allFiles.Files {
+                s.logger.Info("- Name: %s, Type: %s, Parent: %v", f.Name, f.MimeType, f.Parents)
+            }
+        }
+        return nil, fmt.Errorf("no backup files found in drive")
     }
 
+    // Sort backups by time (newest first)
+    sort.Slice(backups, func(i, j int) bool {
+        return backups[i].CreatedTime.After(backups[j].CreatedTime)
+    })
+
     return backups, nil
+}
+
+func (s *GoogleDriveService) GetLatestBackup(containerName string) (*DriveBackup, error) {
+    // Query without parent constraint
+    query := fmt.Sprintf(
+        "mimeType='application/zip' and name contains '%s' and name contains '.zip' and trashed=false",
+        containerName,
+    )
+
+    s.logger.Debug("Searching for backups with query: %s", query)
+    fileList, err := s.service.Files.List().
+        Q(query).
+        OrderBy("createdTime desc").
+        PageSize(1).
+        SupportsAllDrives(true).
+        IncludeItemsFromAllDrives(true).
+        Corpora("drive").
+        DriveId(s.config.GoogleDrive.SharedDriveID).
+        Fields("files(id, name, createdTime, size, parents)").
+        Do()
+
+    if err != nil {
+        return nil, fmt.Errorf("failed to list backup files: %v", err)
+    }
+
+    if len(fileList.Files) == 0 {
+        // Try to list available files for debugging
+        s.logger.Debug("No backups found. Checking available files...")
+        s.ListAvailableBackups()
+        return nil, fmt.Errorf("no backup files found for container: %s", containerName)
+    }
+
+    file := fileList.Files[0]
+    createdTime, err := time.Parse(time.RFC3339, file.CreatedTime)
+    if err != nil {
+        return nil, fmt.Errorf("failed to parse creation time: %v", err)
+    }
+
+    s.logger.Info("Found latest backup: %s (Created: %s, Size: %s)",
+        file.Name,
+        createdTime.Format(time.RFC3339),
+        formatBytes(file.Size))
+
+    return &DriveBackup{
+        ID:          file.Id,
+        Name:        file.Name,
+        CreatedTime: createdTime,
+        Size:        file.Size,
+    }, nil
+}
+
+func (s *GoogleDriveService) GetBackupFromDate(date time.Time, containerName string) (*DriveBackup, error) {
+    startDate := date.Format("2006-01-02") + "T00:00:00Z"
+    endDate := date.Add(24*time.Hour).Format("2006-01-02") + "T00:00:00Z"
+
+    query := fmt.Sprintf(
+        "mimeType='application/zip' and name contains '%s' and name contains '.zip' "+
+        "and createdTime >= '%s' and createdTime < '%s' and trashed=false",
+        containerName, startDate, endDate,
+    )
+
+    s.logger.Debug("Searching for backups with query: %s", query)
+    fileList, err := s.service.Files.List().
+        Q(query).
+        OrderBy("createdTime desc").
+        SupportsAllDrives(true).
+        IncludeItemsFromAllDrives(true).
+        Corpora("drive").
+        DriveId(s.config.GoogleDrive.SharedDriveID).
+        Fields("files(id, name, createdTime, size)").
+        Do()
+
+    if err != nil {
+        return nil, fmt.Errorf("failed to list backup files: %v", err)
+    }
+
+    if len(fileList.Files) == 0 {
+        // Try to list available files for debugging
+        s.logger.Debug("No backups found. Checking available files...")
+        s.ListAvailableBackups()
+        return nil, fmt.Errorf("no backup found for container %s on date %s",
+            containerName, date.Format("2006-01-02"))
+    }
+
+    file := fileList.Files[0]
+    createdTime, err := time.Parse(time.RFC3339, file.CreatedTime)
+    if err != nil {
+        return nil, fmt.Errorf("failed to parse creation time: %v", err)
+    }
+
+    s.logger.Info("Found backup from date %s: %s (Size: %s)",
+        date.Format("2006-01-02"),
+        file.Name,
+        formatBytes(file.Size))
+
+    return &DriveBackup{
+        ID:          file.Id,
+        Name:        file.Name,
+        CreatedTime: createdTime,
+        Size:        file.Size,
+    }, nil
 }
 
 func (s *GoogleDriveService) DownloadFile(ctx context.Context, fileID string, destinationPath string) error {
@@ -288,7 +315,21 @@ func (s *GoogleDriveService) DownloadFile(ctx context.Context, fileID string, de
 
     duration := time.Since(startTime)
     speed := float64(written) / duration.Seconds() / 1024 / 1024 // MB/s
-    s.logger.Info("Download completed: %d bytes (%.2f MB/s)", written, speed)
+    s.logger.Info("Download completed: %s (%.2f MB/s)", formatBytes(written), speed)
 
     return nil
+}
+
+// Helper function to format bytes
+func formatBytes(bytes int64) string {
+    const unit = 1024
+    if bytes < unit {
+        return fmt.Sprintf("%d B", bytes)
+    }
+    div, exp := int64(unit), 0
+    for n := bytes / unit; n >= unit; n /= unit {
+        div *= unit
+        exp++
+    }
+    return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
