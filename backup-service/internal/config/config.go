@@ -17,6 +17,7 @@ type GoogleDriveConfig struct {
     CredentialsPath string
     TokenPath       string
     SharedDriveID   string
+    FolderID        string
 }
 
 type BackupConfig struct {
@@ -53,6 +54,7 @@ func LoadConfig() (*Config, error) {
             CredentialsPath: getEnvWithDefault("GOOGLE_CREDENTIALS_PATH", "/app/credentials.json"),
             TokenPath:       getEnvWithDefault("GOOGLE_TOKEN_PATH", "/app/token.json"),
             SharedDriveID:   os.Getenv("GOOGLE_SHARED_DRIVE_ID"),
+            FolderID:        os.Getenv("GOOGLE_FOLDER_ID"), // Optional: if not set, will use root of Shared Drive
         },
         Backup: BackupConfig{
             Schedule:      getEnvWithDefault("BACKUP_SCHEDULE", "0 1 * * *"),

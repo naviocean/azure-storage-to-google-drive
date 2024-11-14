@@ -22,7 +22,6 @@ type GoogleDriveService struct {
     config  *config.Config
     logger  *utils.Logger
 }
-
 func NewGoogleDriveService(cfg *config.Config, logger *utils.Logger) (*GoogleDriveService, error) {
     ctx := context.Background()
 
@@ -31,7 +30,6 @@ func NewGoogleDriveService(cfg *config.Config, logger *utils.Logger) (*GoogleDri
         return nil, fmt.Errorf("unable to read credentials file: %v", err)
     }
 
-    // Configure Google Drive API with full access scope
     config, err := google.ConfigFromJSON(b, drive.DriveScope)
     if err != nil {
         return nil, fmt.Errorf("unable to parse credentials: %v", err)
@@ -48,11 +46,51 @@ func NewGoogleDriveService(cfg *config.Config, logger *utils.Logger) (*GoogleDri
         return nil, fmt.Errorf("unable to create drive service: %v", err)
     }
 
-    drive, err := s.service.Drives.Get(cfg.GoogleDrive.SharedDriveID).Do()
+    // List all available Shared Drives
+    drives, err := service.Drives.List().PageSize(10).Do()
     if err != nil {
+        logger.Error("Unable to list drives: %v", err)
+    } else {
+        logger.Info("Available Shared Drives:")
+        for _, d := range drives.Drives {
+            logger.Info("- Name: %s, ID: %s", d.Name, d.Id)
+        }
+    }
+
+    // Verify shared drive access
+    if _, err := service.Drives.Get(cfg.GoogleDrive.SharedDriveID).Do(); err != nil {
         return nil, fmt.Errorf("failed to access shared drive: %v", err)
     }
-    s.logger.Info("Successfully connected to Shared Drive: %s", drive.Name)
+
+    // If folder ID is specified, verify it exists and is accessible
+    if cfg.GoogleDrive.FolderID != "" {
+        folder, err := service.Files.Get(cfg.GoogleDrive.FolderID).
+            SupportsAllDrives(true).
+            Fields("id, name, mimeType, parents").
+            Do()
+        if err != nil {
+            return nil, fmt.Errorf("failed to access specified folder: %v", err)
+        }
+
+        // Verify it's a folder
+        if folder.MimeType != "application/vnd.google-apps.folder" {
+            return nil, fmt.Errorf("specified ID is not a folder")
+        }
+
+        // Verify it's in the correct shared drive
+        var inSharedDrive bool
+        for _, parent := range folder.Parents {
+            if parent == cfg.GoogleDrive.SharedDriveID {
+                inSharedDrive = true
+                break
+            }
+        }
+        if !inSharedDrive {
+            return nil, fmt.Errorf("specified folder is not in the configured shared drive")
+        }
+
+        logger.Info("Using folder: %s", folder.Name)
+    }
 
     return &GoogleDriveService{
         service: service,
@@ -129,16 +167,14 @@ func (s *GoogleDriveService) UploadBackup(ctx context.Context, zipPath string, c
 }
 
 func (s *GoogleDriveService) getOrCreateContainerFolder(containerName string) (string, error) {
-    // Verify Shared Drive access first
-    drive, err := s.service.Drives.Get(s.config.GoogleDrive.SharedDriveID).Do()
-    if err != nil {
-        return "", fmt.Errorf("failed to access shared drive: %v", err)
+    parentID := s.config.GoogleDrive.SharedDriveID
+    if s.config.GoogleDrive.FolderID != "" {
+        parentID = s.config.GoogleDrive.FolderID
     }
-    s.logger.Info("Using Shared Drive: %s", drive.Name)
 
     // Search for existing container folder
     query := fmt.Sprintf("name='%s' and mimeType='application/vnd.google-apps.folder' and '%s' in parents and trashed=false",
-        containerName, s.config.GoogleDrive.SharedDriveID)
+        containerName, parentID)
 
     fileList, err := s.service.Files.List().
         Q(query).
@@ -155,18 +191,26 @@ func (s *GoogleDriveService) getOrCreateContainerFolder(containerName string) (s
 
     // Return existing folder if found
     if len(fileList.Files) > 0 {
-        s.logger.Info("Found existing container folder: %s", fileList.Files[0].Name)
         return fileList.Files[0].Id, nil
     }
 
     // Create new container folder
-    s.logger.Info("Creating new container folder: %s", containerName)
-    folder, err := s.createFolder(containerName, []string{s.config.GoogleDrive.SharedDriveID})
-    if err != nil {
-        return "", err
+    folder := &drive.File{
+        Name:     containerName,
+        MimeType: "application/vnd.google-apps.folder",
+        Parents:  []string{parentID},
     }
 
-    return folder.Id, nil
+    result, err := s.service.Files.Create(folder).
+        SupportsAllDrives(true).
+        Fields("id, name").
+        Do()
+
+    if err != nil {
+        return "", fmt.Errorf("failed to create folder: %v", err)
+    }
+
+    return result.Id, nil
 }
 
 func (s *GoogleDriveService) createFolder(name string, parents []string) (*drive.File, error) {
@@ -191,10 +235,16 @@ func (s *GoogleDriveService) createFolder(name string, parents []string) (*drive
 func (s *GoogleDriveService) CleanupOldBackups(ctx context.Context, retentionDays int) error {
     cutoffTime := time.Now().AddDate(0, 0, -retentionDays)
 
-    // List all container folders in shared drive
+    // Determine parent folder ID
+    parentID := s.config.GoogleDrive.SharedDriveID
+    if s.config.GoogleDrive.FolderID != "" {
+        parentID = s.config.GoogleDrive.FolderID
+    }
+
+    // List all container folders in the specified parent
     containerFolders, err := s.service.Files.List().
         Q(fmt.Sprintf("mimeType='application/vnd.google-apps.folder' and '%s' in parents and trashed=false",
-            s.config.GoogleDrive.SharedDriveID)).
+            parentID)).
         SupportsAllDrives(true).
         IncludeItemsFromAllDrives(true).
         Corpora("drive").
@@ -239,6 +289,32 @@ func (s *GoogleDriveService) CleanupOldBackups(ctx context.Context, retentionDay
             }
             s.logger.Info("Deleted old backup: %s", folder.Name)
         }
+    }
+
+    return nil
+}
+
+// Helper function to list available folders
+func (s *GoogleDriveService) ListAvailableFolders() error {
+    query := fmt.Sprintf("mimeType='application/vnd.google-apps.folder' and '%s' in parents and trashed=false",
+        s.config.GoogleDrive.SharedDriveID)
+
+    fileList, err := s.service.Files.List().
+        Q(query).
+        SupportsAllDrives(true).
+        IncludeItemsFromAllDrives(true).
+        Corpora("drive").
+        DriveId(s.config.GoogleDrive.SharedDriveID).
+        Fields("files(id, name, createdTime)").
+        Do()
+
+    if err != nil {
+        return fmt.Errorf("failed to list folders: %v", err)
+    }
+
+    s.logger.Info("Available folders in Shared Drive:")
+    for _, folder := range fileList.Files {
+        s.logger.Info("- Name: %s, ID: %s", folder.Name, folder.Id)
     }
 
     return nil
