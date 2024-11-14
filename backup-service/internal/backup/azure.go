@@ -100,28 +100,42 @@ func (s *AzureService) loadSyncMetadata() (*SyncMetadata, error) {
 }
 
 func (s *AzureService) saveSyncMetadata(metadata *SyncMetadata) error {
-    // Create temp file for atomic write
-    tempFile := s.metadataPath + ".tmp"
-    file, err := os.Create(tempFile)
+    // Tạo temp file
+    tempPath := s.metadataPath + ".tmp"
+    file, err := os.Create(tempPath)
     if err != nil {
-        return err
+        return fmt.Errorf("failed to create temp metadata file: %v", err)
     }
 
+    // Pretty print JSON
     encoder := json.NewEncoder(file)
     encoder.SetIndent("", "    ")
     if err := encoder.Encode(metadata); err != nil {
         file.Close()
-        os.Remove(tempFile)
-        return err
+        os.Remove(tempPath)
+        return fmt.Errorf("failed to encode metadata: %v", err)
     }
 
+    // Sync to disk
+    if err := file.Sync(); err != nil {
+        file.Close()
+        os.Remove(tempPath)
+        return fmt.Errorf("failed to sync metadata file: %v", err)
+    }
+
+    // Close file before rename
     if err := file.Close(); err != nil {
-        os.Remove(tempFile)
-        return err
+        os.Remove(tempPath)
+        return fmt.Errorf("failed to close metadata file: %v", err)
     }
 
     // Atomic rename
-    return os.Rename(tempFile, s.metadataPath)
+    if err := os.Rename(tempPath, s.metadataPath); err != nil {
+        os.Remove(tempPath)
+        return fmt.Errorf("failed to save metadata file: %v", err)
+    }
+
+    return nil
 }
 
 func (s *AzureService) calculateMD5(filePath string) (string, error) {
@@ -143,6 +157,7 @@ func (s *AzureService) DownloadBlobs(ctx context.Context, backupRootDir string) 
     startTime := time.Now()
     s.logger.Info("Starting blob download to: %s", backupRootDir)
 
+    // Load existing metadata
     metadata, err := s.loadSyncMetadata()
     if err != nil {
         s.logger.Warn("Failed to load sync metadata, will perform full sync: %v", err)
@@ -152,12 +167,16 @@ func (s *AzureService) DownloadBlobs(ctx context.Context, backupRootDir string) 
     }
 
     stats := make(map[string]*ContainerStats)
+    newMetadata := &SyncMetadata{
+        LastSync:   time.Now(),
+        Containers: make(map[string]ContainerMetadata),
+    }
     var mu sync.Mutex
 
     if s.config.Azure.ContainerName == "ALL" {
         // Process all containers
         var containerWg sync.WaitGroup
-        containerSemaphore := make(chan struct{}, 5) // Limit concurrent containers
+        containerSemaphore := make(chan struct{}, 5)
 
         for marker := (azblob.Marker{}); marker.NotDone(); {
             listContainer, err := s.serviceURL.ListContainersSegment(ctx, marker, azblob.ListContainersSegmentOptions{})
@@ -175,7 +194,7 @@ func (s *AzureService) DownloadBlobs(ctx context.Context, backupRootDir string) 
                     defer func() { <-containerSemaphore }() // Release
 
                     s.logger.Info("Processing container: %s", container.Name)
-                    containerStats, err := s.processContainer(
+                    containerStats, currentFiles, err := s.processContainer(
                         ctx,
                         container.Name,
                         backupRootDir,
@@ -188,6 +207,10 @@ func (s *AzureService) DownloadBlobs(ctx context.Context, backupRootDir string) 
 
                     mu.Lock()
                     stats[container.Name] = containerStats
+                    newMetadata.Containers[container.Name] = ContainerMetadata{
+                        Files:    currentFiles,
+                        LastSync: time.Now(),
+                    }
                     mu.Unlock()
 
                 }(container)
@@ -195,10 +218,9 @@ func (s *AzureService) DownloadBlobs(ctx context.Context, backupRootDir string) 
 
             containerWg.Wait()
         }
-
     } else {
         // Process single container
-        containerStats, err := s.processContainer(
+        containerStats, currentFiles, err := s.processContainer(
             ctx,
             s.config.Azure.ContainerName,
             backupRootDir,
@@ -208,17 +230,17 @@ func (s *AzureService) DownloadBlobs(ctx context.Context, backupRootDir string) 
             return nil, fmt.Errorf("failed to process container %s: %v", s.config.Azure.ContainerName, err)
         }
         stats[s.config.Azure.ContainerName] = containerStats
+        newMetadata.Containers[s.config.Azure.ContainerName] = ContainerMetadata{
+            Files:    currentFiles,
+            LastSync: time.Now(),
+        }
     }
 
-    // Update metadata
-    newMetadata := &SyncMetadata{
-        LastSync:   time.Now(),
-        Containers: make(map[string]ContainerMetadata),
-    }
-
-    // Save updated metadata
+    // Save updated metadata (atomic)
     if err := s.saveSyncMetadata(newMetadata); err != nil {
         s.logger.Error("Failed to save sync metadata: %v", err)
+    } else {
+        s.logger.Info("Successfully updated sync metadata")
     }
 
     duration := time.Since(startTime)
@@ -237,17 +259,18 @@ func (s *AzureService) DownloadBlobs(ctx context.Context, backupRootDir string) 
     return stats, nil
 }
 
-func (s *AzureService) processContainer(ctx context.Context, containerName string, backupRootDir string, metadata ContainerMetadata) (*ContainerStats, error) {
+
+func (s *AzureService) processContainer(ctx context.Context, containerName string, backupRootDir string, metadata ContainerMetadata) (*ContainerStats, map[string]BlobMetadata, error) {
     containerURL := s.serviceURL.NewContainerURL(containerName)
 
     // Verify container exists and is accessible
     _, err := containerURL.GetProperties(ctx, azblob.LeaseAccessConditions{})
     if err != nil {
-        return nil, fmt.Errorf("container not accessible: %v", err)
+        return nil, nil, fmt.Errorf("container not accessible: %v", err)
     }
 
     stats := &ContainerStats{}
-    currentFiles := make(map[string]struct{}) // Track current files
+    currentFiles := make(map[string]BlobMetadata)
     var mu sync.Mutex
     var wg sync.WaitGroup
     semaphore := make(chan struct{}, s.config.Backup.MaxConcurrent)
@@ -256,7 +279,7 @@ func (s *AzureService) processContainer(ctx context.Context, containerName strin
     // Create permanent container directory
     containerDir := filepath.Join(backupRootDir, containerName)
     if err := os.MkdirAll(containerDir, 0755); err != nil {
-        return nil, fmt.Errorf("failed to create container directory: %v", err)
+        return nil, nil, fmt.Errorf("failed to create container directory: %v", err)
     }
 
     // List and process blobs
@@ -265,7 +288,7 @@ func (s *AzureService) processContainer(ctx context.Context, containerName strin
             MaxResults: 5000,
         })
         if err != nil {
-            return nil, fmt.Errorf("failed to list blobs: %v", err)
+            return nil, nil, fmt.Errorf("failed to list blobs: %v", err)
         }
 
         marker = listBlob.NextMarker
@@ -280,10 +303,18 @@ func (s *AzureService) processContainer(ctx context.Context, containerName strin
 
                 mu.Lock()
                 stats.FilesCount++
+                var contentLength int64
                 if blobInfo.Properties.ContentLength != nil {
-                    stats.TotalSize += *blobInfo.Properties.ContentLength
+                    contentLength = *blobInfo.Properties.ContentLength
+                    stats.TotalSize += contentLength
                 }
-                currentFiles[blobInfo.Name] = struct{}{} // Track current file
+
+                // Update current file metadata
+                currentFiles[blobInfo.Name] = BlobMetadata{
+                    LastModified: blobInfo.Properties.LastModified,
+                    MD5Hash:      string(blobInfo.Properties.ContentMD5),
+                    Size:         contentLength,
+                }
                 mu.Unlock()
 
                 // Check if blob needs download
@@ -354,12 +385,11 @@ func (s *AzureService) processContainer(ctx context.Context, containerName strin
     }
 
     if len(errors) > 0 {
-        return stats, fmt.Errorf("encountered %d download errors: %v", len(errors), errors)
+        return stats, currentFiles, fmt.Errorf("encountered %d download errors: %v", len(errors), errors)
     }
 
-    return stats, nil
+    return stats, currentFiles, nil
 }
-
 func (s *AzureService) downloadBlob(ctx context.Context, containerURL azblob.ContainerURL, blobName, targetPath string) error {
     blobURL := containerURL.NewBlockBlobURL(blobName)
 

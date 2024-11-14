@@ -32,6 +32,7 @@ services:
       - GOOGLE_CREDENTIALS_PATH=/app/credentials.json
       - GOOGLE_TOKEN_PATH=/app/token.json
       - GOOGLE_SHARED_DRIVE_ID=${GOOGLE_SHARED_DRIVE_ID}
+      - GOOGLE_FOLDER_ID=${GOOGLE_FOLDER_ID}
       - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-"0 1 * * *"}
       - TZ=Asia/Ho_Chi_Minh
       - MAX_CONCURRENT_OPERATIONS=10
@@ -71,6 +72,7 @@ services:
       - GOOGLE_CREDENTIALS_PATH=/app/credentials.json
       - GOOGLE_TOKEN_PATH=/app/token.json
       - GOOGLE_SHARED_DRIVE_ID=${GOOGLE_SHARED_DRIVE_ID}
+      - GOOGLE_FOLDER_ID=${GOOGLE_FOLDER_ID}
       - MAX_CONCURRENT_OPERATIONS=10
       - TZ=Asia/Ho_Chi_Minh
     restart: "no"
