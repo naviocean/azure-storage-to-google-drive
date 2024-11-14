@@ -1,26 +1,21 @@
 package config
 
-import (
-    "fmt"
-    "os"
-    "strconv"
-)
-
-type AzureConfig struct {
-    AccountName  string
-    AccountKey   string
-    ContainerName string
-}
-
 type GoogleDriveConfig struct {
     CredentialsPath string
     TokenPath       string
     SharedDriveID   string
+    FolderID        string  // ID của folder chứa backups
+}
+
+type AzureConfig struct {
+    AccountName  string
+    AccountKey   string
+    ContainerName string  // "ALL" hoặc tên container cụ thể
 }
 
 type RestoreConfig struct {
-    TempDir        string
-    MaxConcurrent  int
+    TempDir       string
+    MaxConcurrent int
 }
 
 type Config struct {
@@ -41,6 +36,7 @@ func LoadConfig() (*Config, error) {
             CredentialsPath: getEnvWithDefault("GOOGLE_CREDENTIALS_PATH", "/app/credentials.json"),
             TokenPath:       getEnvWithDefault("GOOGLE_TOKEN_PATH", "/app/token.json"),
             SharedDriveID:   os.Getenv("GOOGLE_SHARED_DRIVE_ID"),
+            FolderID:        os.Getenv("GOOGLE_FOLDER_ID"),  // Optional
         },
         Restore: RestoreConfig{
             TempDir:       getEnvWithDefault("TEMP_DIR", "/app/temp"),
