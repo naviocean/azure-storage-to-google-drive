@@ -13,8 +13,8 @@ import (
     "time"
 
     "github.com/Azure/azure-storage-blob-go/azblob"
-    "backup-service/internal/config"
-    "backup-service/internal/utils"
+    "shared/pkg/config"
+    "shared/pkg/utils"
 )
 
 type BlobMetadata struct {
@@ -42,12 +42,12 @@ type ContainerStats struct {
 
 type AzureService struct {
     serviceURL    azblob.ServiceURL
-    config       *config.Config
+    config       *config.BackupServiceConfig
     logger       *utils.Logger
     metadataPath string
 }
 
-func NewAzureService(cfg *config.Config, logger *utils.Logger) (*AzureService, error) {
+func NewAzureService(cfg *config.BackupServiceConfig, logger *utils.Logger) (*AzureService, error) {
     credential, err := azblob.NewSharedKeyCredential(
         cfg.Azure.AccountName,
         cfg.Azure.AccountKey,
@@ -157,7 +157,6 @@ func (s *AzureService) DownloadBlobs(ctx context.Context, backupRootDir string) 
     startTime := time.Now()
     s.logger.Info("Starting blob download to: %s", backupRootDir)
 
-    // Load existing metadata
     metadata, err := s.loadSyncMetadata()
     if err != nil {
         s.logger.Warn("Failed to load sync metadata, will perform full sync: %v", err)
@@ -236,7 +235,7 @@ func (s *AzureService) DownloadBlobs(ctx context.Context, backupRootDir string) 
         }
     }
 
-    // Save updated metadata (atomic)
+    // Save updated metadata
     if err := s.saveSyncMetadata(newMetadata); err != nil {
         s.logger.Error("Failed to save sync metadata: %v", err)
     } else {

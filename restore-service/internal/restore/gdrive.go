@@ -2,12 +2,106 @@ package restore
 
 import (
     "context"
+    "encoding/json"
     "fmt"
+    "io"
+    "os"
     "time"
+
+    "golang.org/x/oauth2"
+    "golang.org/x/oauth2/google"
     "google.golang.org/api/drive/v3"
-    "backup-service/internal/config"
-    "backup-service/internal/utils"
+    "google.golang.org/api/option"
+
+    "shared/pkg/config"
+    "shared/pkg/utils"
 )
+
+type DriveBackup struct {
+    ID          string
+    Name        string
+    CreatedTime time.Time
+    Size        int64
+}
+
+type GoogleDriveService struct {
+    service *drive.Service
+    config  *config.RestoreServiceConfig
+    logger  *utils.Logger
+}
+
+func NewGoogleDriveService(cfg *config.RestoreServiceConfig, logger *utils.Logger) (*GoogleDriveService, error) {
+    ctx := context.Background()
+
+    b, err := os.ReadFile(cfg.GoogleDrive.CredentialsPath)
+    if err != nil {
+        return nil, fmt.Errorf("unable to read credentials file: %v", err)
+    }
+
+    config, err := google.ConfigFromJSON(b, drive.DriveScope)
+    if err != nil {
+        return nil, fmt.Errorf("unable to parse credentials: %v", err)
+    }
+
+    token, err := loadToken(cfg.GoogleDrive.TokenPath)
+    if err != nil {
+        return nil, fmt.Errorf("unable to load token: %v", err)
+    }
+
+    service, err := drive.NewService(ctx,
+        option.WithTokenSource(config.TokenSource(ctx, token)))
+    if err != nil {
+        return nil, fmt.Errorf("unable to create drive service: %v", err)
+    }
+
+    // Verify Shared Drive access
+    drive, err := service.Drives.Get(cfg.GoogleDrive.SharedDriveID).Do()
+    if err != nil {
+        return nil, fmt.Errorf("failed to access shared drive: %v", err)
+    }
+    logger.Info("Connected to Shared Drive: %s", drive.Name)
+
+    // Verify folder access if specified
+    if cfg.GoogleDrive.FolderID != "" {
+        folder, err := service.Files.Get(cfg.GoogleDrive.FolderID).
+            SupportsAllDrives(true).
+            Fields("id, name, parents").
+            Do()
+        if err != nil {
+            return nil, fmt.Errorf("failed to access specified folder: %v", err)
+        }
+
+        var inSharedDrive bool
+        for _, parent := range folder.Parents {
+            if parent == cfg.GoogleDrive.SharedDriveID {
+                inSharedDrive = true
+                break
+            }
+        }
+        if !inSharedDrive {
+            return nil, fmt.Errorf("specified folder is not in the configured shared drive")
+        }
+        logger.Info("Using folder: %s", folder.Name)
+    }
+
+    return &GoogleDriveService{
+        service: service,
+        config:  cfg,
+        logger:  logger,
+    }, nil
+}
+
+func loadToken(path string) (*oauth2.Token, error) {
+    f, err := os.Open(path)
+    if err != nil {
+        return nil, err
+    }
+    defer f.Close()
+
+    token := &oauth2.Token{}
+    err = json.NewDecoder(f).Decode(token)
+    return token, err
+}
 
 func (s *GoogleDriveService) GetLatestBackup(containerName string) (*DriveBackup, error) {
     parentID := s.config.GoogleDrive.SharedDriveID
@@ -15,7 +109,7 @@ func (s *GoogleDriveService) GetLatestBackup(containerName string) (*DriveBackup
         parentID = s.config.GoogleDrive.FolderID
     }
 
-    // Search for backup files in the specified location
+    // Search for backup files for specific container
     query := fmt.Sprintf(
         "mimeType='application/zip' and name contains '%s_backup_' and '%s' in parents and trashed=false",
         containerName, parentID,
@@ -37,7 +131,7 @@ func (s *GoogleDriveService) GetLatestBackup(containerName string) (*DriveBackup
     }
 
     if len(fileList.Files) == 0 {
-        return nil, fmt.Errorf("no backup files found")
+        return nil, fmt.Errorf("no backup files found for container: %s", containerName)
     }
 
     file := fileList.Files[0]
@@ -84,7 +178,8 @@ func (s *GoogleDriveService) GetBackupFromDate(date time.Time, containerName str
     }
 
     if len(fileList.Files) == 0 {
-        return nil, fmt.Errorf("no backup found for date: %s", date.Format("2006-01-02"))
+        return nil, fmt.Errorf("no backup found for container %s on date %s",
+            containerName, date.Format("2006-01-02"))
     }
 
     file := fileList.Files[0]
@@ -105,26 +200,6 @@ func (s *GoogleDriveService) ListAvailableBackups() ([]*DriveBackup, error) {
     parentID := s.config.GoogleDrive.SharedDriveID
     if s.config.GoogleDrive.FolderID != "" {
         parentID = s.config.GoogleDrive.FolderID
-        // Verify folder exists and is in the correct shared drive
-        folder, err := s.service.Files.Get(parentID).
-            SupportsAllDrives(true).
-            Fields("id, name, parents").
-            Do()
-        if err != nil {
-            return nil, fmt.Errorf("failed to access specified folder: %v", err)
-        }
-
-        var inSharedDrive bool
-        for _, parent := range folder.Parents {
-            if parent == s.config.GoogleDrive.SharedDriveID {
-                inSharedDrive = true
-                break
-            }
-        }
-        if !inSharedDrive {
-            return nil, fmt.Errorf("specified folder is not in the configured shared drive")
-        }
-        s.logger.Info("Using folder: %s", folder.Name)
     }
 
     query := fmt.Sprintf(
@@ -177,4 +252,43 @@ func (s *GoogleDriveService) ListAvailableBackups() ([]*DriveBackup, error) {
     }
 
     return backups, nil
+}
+
+func (s *GoogleDriveService) DownloadFile(ctx context.Context, fileID string, destinationPath string) error {
+    startTime := time.Now()
+    s.logger.Info("Starting download of file: %s", fileID)
+
+    res, err := s.service.Files.Get(fileID).
+        SupportsAllDrives(true).
+        Download()
+    if err != nil {
+        return fmt.Errorf("failed to download file: %v", err)
+    }
+    defer res.Body.Close()
+
+    tempPath := destinationPath + ".tmp"
+    out, err := os.Create(tempPath)
+    if err != nil {
+        return fmt.Errorf("failed to create temp file: %v", err)
+    }
+
+    written, err := io.Copy(out, res.Body)
+    out.Close()
+
+    if err != nil {
+        os.Remove(tempPath)
+        return fmt.Errorf("failed to save file: %v", err)
+    }
+
+    // Atomic rename
+    if err := os.Rename(tempPath, destinationPath); err != nil {
+        os.Remove(tempPath)
+        return fmt.Errorf("failed to rename temp file: %v", err)
+    }
+
+    duration := time.Since(startTime)
+    speed := float64(written) / duration.Seconds() / 1024 / 1024 // MB/s
+    s.logger.Info("Download completed: %d bytes (%.2f MB/s)", written, speed)
+
+    return nil
 }

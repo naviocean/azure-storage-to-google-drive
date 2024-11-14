@@ -4,45 +4,101 @@ services:
   token-generator:
     image: az-gg-token:latest
     build:
-      context: ./token-generator
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: token-generator/Dockerfile
     volumes:
       - ./credentials.json:/app/credentials.json:ro
       - ./token.json:/app/token.json
     environment:
       - GOOGLE_CREDENTIALS_PATH=/app/credentials.json
       - GOOGLE_TOKEN_PATH=/app/token.json
+    tty: true
+    stdin_open: true
     restart: "no"
-    env_file:
-      - .env
 
   backup-service:
     image: az-gg-backup:latest
     build:
-      context: ./backup-service
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backup-service/Dockerfile
     volumes:
       - ./backups:/app/backups
+      - ./temp:/app/temp
       - ./credentials.json:/app/credentials.json:ro
       - ./token.json:/app/token.json
     environment:
+      # Azure Storage Configuration
       - AZURE_ACCOUNT_NAME=${AZURE_ACCOUNT_NAME}
       - AZURE_ACCOUNT_KEY=${AZURE_ACCOUNT_KEY}
-      - AZURE_CONTAINER_NAME=${AZURE_CONTAINER_NAME}
+      - AZURE_CONTAINER_NAME=${AZURE_CONTAINER_NAME:-"ALL"}
+
+      # Google Drive Configuration
       - GOOGLE_CREDENTIALS_PATH=/app/credentials.json
       - GOOGLE_TOKEN_PATH=/app/token.json
       - GOOGLE_SHARED_DRIVE_ID=${GOOGLE_SHARED_DRIVE_ID}
       - GOOGLE_FOLDER_ID=${GOOGLE_FOLDER_ID}
+
+      # Backup Configuration
+      - BACKUP_PATH=/app/backups
+      - TEMP_DIR=/app/temp
       - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-"0 1 * * *"}
-      - TZ=Asia/Ho_Chi_Minh
-      - MAX_CONCURRENT_OPERATIONS=10
-      - BACKUP_RETENTION_DAYS=7
-    restart: always
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
+      - MAX_CONCURRENT_OPERATIONS=${MAX_CONCURRENT_OPERATIONS:-10}
+
+      # Application Configuration
+      - TZ=${TZ:-Asia/Ho_Chi_Minh}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ENABLE_METRICS=${ENABLE_METRICS:-true}
+      - METRICS_PORT=${METRICS_PORT:-9090}
+    deploy:
+      resources:
+        limits:
+          cpus: '${CPU_LIMIT:-1}'
+          memory: ${MEMORY_LIMIT:-1g}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: always
+    env_file:
+      - .env
+
+  restore-service:
+    image: az-gg-restore:latest
+    build:
+      context: .
+      dockerfile: restore-service/Dockerfile
+    volumes:
+      - ./temp:/app/temp
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
+    environment:
+      # Target Azure Storage Configuration
+      - TARGET_AZURE_ACCOUNT_NAME=${TARGET_AZURE_ACCOUNT_NAME}
+      - TARGET_AZURE_ACCOUNT_KEY=${TARGET_AZURE_ACCOUNT_KEY}
+      - TARGET_AZURE_CONTAINER_NAME=${TARGET_AZURE_CONTAINER_NAME:-"ALL"}
+
+      # Google Drive Configuration
+      - GOOGLE_CREDENTIALS_PATH=/app/credentials.json
+      - GOOGLE_TOKEN_PATH=/app/token.json
+      - GOOGLE_SHARED_DRIVE_ID=${GOOGLE_SHARED_DRIVE_ID}
+      - GOOGLE_FOLDER_ID=${GOOGLE_FOLDER_ID}
+
+      # Restore Configuration
+      - TEMP_DIR=/app/temp
+      - MAX_CONCURRENT_OPERATIONS=${MAX_CONCURRENT_OPERATIONS:-10}
+
+      # Application Configuration
+      - TZ=${TZ:-Asia/Ho_Chi_Minh}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ENABLE_METRICS=${ENABLE_METRICS:-true}
+      - METRICS_PORT=${METRICS_PORT:-9090}
     deploy:
       resources:
         limits:
@@ -53,28 +109,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    env_file:
-      - .env
-
-  restore-service:
-    image: az-gg-restore:latest
-    build:
-      context: ./restore-service
-      dockerfile: Dockerfile
-    volumes:
-      - ./temp:/app/temp
-      - ./credentials.json:/app/credentials.json:ro
-      - ./token.json:/app/token.json
-    environment:
-      - TARGET_AZURE_ACCOUNT_NAME=${TARGET_AZURE_ACCOUNT_NAME}
-      - TARGET_AZURE_ACCOUNT_KEY=${TARGET_AZURE_ACCOUNT_KEY}
-      - TARGET_AZURE_CONTAINER_NAME=${TARGET_AZURE_CONTAINER_NAME}
-      - GOOGLE_CREDENTIALS_PATH=/app/credentials.json
-      - GOOGLE_TOKEN_PATH=/app/token.json
-      - GOOGLE_SHARED_DRIVE_ID=${GOOGLE_SHARED_DRIVE_ID}
-      - GOOGLE_FOLDER_ID=${GOOGLE_FOLDER_ID}
-      - MAX_CONCURRENT_OPERATIONS=10
-      - TZ=Asia/Ho_Chi_Minh
     restart: "no"
     env_file:
       - .env

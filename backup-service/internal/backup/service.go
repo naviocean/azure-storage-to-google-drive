@@ -8,19 +8,19 @@ import (
     "time"
 
     "github.com/robfig/cron/v3"
-    "backup-service/internal/config"
-    "backup-service/internal/utils"
+    "shared/pkg/config"
+    "shared/pkg/utils"
 )
 
 type BackupService struct {
-    config       *config.Config
+    config       *config.BackupServiceConfig
     logger       *utils.Logger
     azureService *AzureService
     driveService *GoogleDriveService
 }
 
-func NewBackupService(cfg *config.Config) (*BackupService, error) {
-    logger := utils.NewLogger("[BACKUP]", cfg.LogLevel)
+func NewBackupService(cfg *config.BackupServiceConfig) (*BackupService, error) {
+    logger := utils.NewLogger("[BACKUP]", cfg.Common.LogLevel)
 
     azureService, err := NewAzureService(cfg, logger)
     if err != nil {
@@ -119,4 +119,8 @@ func (s *BackupService) StartScheduler() error {
         c.Entries()[0].Schedule.Next(time.Now()).Format("2006-01-02 15:04:05"))
 
     return nil
+}
+
+func (s *BackupService) ListFolders() error {
+    return s.driveService.ListAvailableFolders()
 }

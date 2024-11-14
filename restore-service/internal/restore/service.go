@@ -8,17 +8,39 @@ import (
     "strings"
     "time"
 
-    "backup-service/internal/config"
-    "backup-service/internal/utils"
+    "shared/pkg/config"
+    "shared/pkg/utils"
 )
 
 type RestoreService struct {
-    config       *config.Config
+    config       *config.RestoreServiceConfig
     logger       *utils.Logger
     driveService *GoogleDriveService
     azureService *AzureService
 }
 
+func NewRestoreService(cfg *config.RestoreServiceConfig) (*RestoreService, error) {
+    logger := utils.NewLogger("[RESTORE]", cfg.Common.LogLevel)
+
+    driveService, err := NewGoogleDriveService(cfg, logger)
+    if err != nil {
+        return nil, fmt.Errorf("failed to initialize drive service: %v", err)
+    }
+
+    azureService, err := NewAzureService(cfg, logger)
+    if err != nil {
+        return nil, fmt.Errorf("failed to initialize azure service: %v", err)
+    }
+
+    return &RestoreService{
+        config:       cfg,
+        logger:       logger,
+        driveService: driveService,
+        azureService: azureService,
+    }, nil
+}
+
+// RestoreLatest restores the most recent backup
 func (s *RestoreService) RestoreLatest(ctx context.Context) error {
     if s.config.Azure.ContainerName == "ALL" {
         return s.restoreAllContainers(ctx, nil)
@@ -26,6 +48,7 @@ func (s *RestoreService) RestoreLatest(ctx context.Context) error {
     return s.restoreContainer(ctx, s.config.Azure.ContainerName, nil)
 }
 
+// RestoreFromDate restores backup from a specific date
 func (s *RestoreService) RestoreFromDate(ctx context.Context, date time.Time) error {
     if s.config.Azure.ContainerName == "ALL" {
         return s.restoreAllContainers(ctx, &date)
@@ -34,7 +57,7 @@ func (s *RestoreService) RestoreFromDate(ctx context.Context, date time.Time) er
 }
 
 func (s *RestoreService) restoreAllContainers(ctx context.Context, date *time.Time) error {
-    // Get available backups for all containers
+    // Get available backups
     backups, err := s.driveService.ListAvailableBackups()
     if err != nil {
         return fmt.Errorf("failed to list backups: %v", err)
@@ -44,7 +67,6 @@ func (s *RestoreService) restoreAllContainers(ctx context.Context, date *time.Ti
     containerBackups := make(map[string][]*DriveBackup)
     for _, backup := range backups {
         // Parse container name from backup file name
-        // Example: container1_backup_20231114_120000.zip
         parts := strings.Split(backup.Name, "_backup_")
         if len(parts) != 2 {
             s.logger.Warn("Invalid backup file name format: %s", backup.Name)
@@ -109,16 +131,16 @@ func (s *RestoreService) processRestore(ctx context.Context, containerName strin
         backup.CreatedTime.Format("2006-01-02 15:04:05"),
         float64(backup.Size)/(1024*1024))
 
-    // Create temp directory for restore
-    tempDir := filepath.Join(s.config.Restore.TempDir, fmt.Sprintf("restore_%s_%s",
+    // Create temp directory
+    tempDir := filepath.Join(s.config.TempDir, fmt.Sprintf("restore_%s_%s",
         containerName,
         time.Now().Format("20060102_150405")))
     if err := os.MkdirAll(tempDir, 0755); err != nil {
         return fmt.Errorf("failed to create temp directory: %v", err)
     }
-    defer os.RemoveAll(tempDir) // Cleanup when done
+    defer os.RemoveAll(tempDir)
 
-    // Download backup file
+    // Download backup
     s.logger.Info("Downloading backup file...")
     zipPath := filepath.Join(tempDir, backup.Name)
     if err := s.driveService.DownloadFile(ctx, backup.ID, zipPath); err != nil {

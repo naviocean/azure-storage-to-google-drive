@@ -4,10 +4,9 @@ import (
     "context"
     "flag"
     "log"
-    "os"
     "time"
 
-    "restore-service/internal/config"
+    "shared/pkg/config"
     "restore-service/internal/restore"
 )
 
@@ -17,7 +16,7 @@ func main() {
     flag.Parse()
 
     // Load configuration
-    cfg, err := config.LoadConfig()
+    cfg, err := config.LoadRestoreConfig()
     if err != nil {
         log.Fatalf("Failed to load configuration: %v", err)
     }
@@ -49,6 +48,4 @@ func main() {
     if restoreErr != nil {
         log.Fatalf("Restore failed: %v", restoreErr)
     }
-
-    os.Exit(0)
 }

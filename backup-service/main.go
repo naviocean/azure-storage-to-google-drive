@@ -1,18 +1,23 @@
 package main
 
 import (
+    "flag"
     "log"
     "os"
     "os/signal"
     "syscall"
 
+    "shared/pkg/config"
     "backup-service/internal/backup"
-    "backup-service/internal/config"
 )
 
 func main() {
+    // Parse command line flags
+    listFolders := flag.Bool("list-folders", false, "List available folders in Shared Drive")
+    flag.Parse()
+
     // Load configuration
-    cfg, err := config.LoadConfig()
+    cfg, err := config.LoadBackupConfig()
     if err != nil {
         log.Fatalf("Failed to load configuration: %v", err)
     }
@@ -21,6 +26,14 @@ func main() {
     service, err := backup.NewBackupService(cfg)
     if err != nil {
         log.Fatalf("Failed to create backup service: %v", err)
+    }
+
+    // If list-folders flag is set, just list folders and exit
+    if *listFolders {
+        if err := service.ListFolders(); err != nil {
+            log.Fatalf("Failed to list folders: %v", err)
+        }
+        return
     }
 
     // Start scheduler

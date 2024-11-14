@@ -1,15 +1,23 @@
-FROM golang:1.20-alpine
+FROM golang:1.23-alpine
+WORKDIR /src
 
-WORKDIR /app
+# Copy shared module
+COPY shared /src/shared
 
-RUN apk add --no-cache \
-    tzdata \
-    ca-certificates
+# Copy restore-service
+COPY restore-service /src/restore-service
 
-COPY go.mod go.sum ./
+# Set workdir to restore-service
+WORKDIR /src/restore-service
+
+# Download dependencies and build
 RUN go mod download
+RUN go mod tidy
+RUN go build -o /app/restore-service
 
-COPY . .
-RUN go build -o restore-service
+# Switch to app directory
+WORKDIR /app
+# COPY restore-service/credentials.json .
+# COPY restore-service/token.json .
 
 CMD ["./restore-service"]
