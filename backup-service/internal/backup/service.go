@@ -16,7 +16,7 @@ type BackupService struct {
     config       *config.BackupServiceConfig
     logger       *utils.Logger
     azureService *AzureService
-    driveService *GoogleDriveService
+    driveService *GoogleDriveBackup
 }
 
 func NewBackupService(cfg *config.BackupServiceConfig) (*BackupService, error) {
@@ -27,7 +27,7 @@ func NewBackupService(cfg *config.BackupServiceConfig) (*BackupService, error) {
         return nil, fmt.Errorf("failed to initialize azure service: %v", err)
     }
 
-    driveService, err := NewGoogleDriveService(cfg, logger)
+    driveService, err := NewGoogleDriveBackup(cfg, logger)
     if err != nil {
         return nil, fmt.Errorf("failed to initialize drive service: %v", err)
     }

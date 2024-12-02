@@ -9,20 +9,21 @@ import (
     "time"
 
     "shared/pkg/config"
+    "shared/pkg/gdrive"
     "shared/pkg/utils"
 )
 
 type RestoreService struct {
     config       *config.RestoreServiceConfig
     logger       *utils.Logger
-    driveService *GoogleDriveService
+    driveService *GoogleDriveRestore
     azureService *AzureService
 }
 
 func NewRestoreService(cfg *config.RestoreServiceConfig) (*RestoreService, error) {
     logger := utils.NewLogger("[RESTORE]", cfg.Common.LogLevel)
 
-    driveService, err := NewGoogleDriveService(cfg, logger)
+    driveService, err := NewGoogleDriveRestore(cfg, logger)
     if err != nil {
         return nil, fmt.Errorf("failed to initialize drive service: %v", err)
     }
@@ -63,7 +64,7 @@ func (s *RestoreService) restoreAllContainers(ctx context.Context, date *time.Ti
     }
 
     // Group backups by container
-    containerBackups := make(map[string][]*DriveBackup)
+    containerBackups := make(map[string][]*gdrive.DriveBackup)
     for _, backup := range backups {
         // Parse container name from backup file name
         // Example: "assets_20241114_144123.zip"
@@ -78,7 +79,7 @@ func (s *RestoreService) restoreAllContainers(ctx context.Context, date *time.Ti
             continue
         }
 
-        var backupToRestore *DriveBackup
+        var backupToRestore *gdrive.DriveBackup
         if date != nil {
             // Find backup closest to specified date
             backupToRestore = findClosestBackup(backups, *date)
@@ -102,7 +103,7 @@ func (s *RestoreService) restoreAllContainers(ctx context.Context, date *time.Ti
 }
 
 func (s *RestoreService) restoreContainer(ctx context.Context, containerName string, date *time.Time) error {
-    var backup *DriveBackup
+    var backup *gdrive.DriveBackup
     var err error
 
     if date != nil {
@@ -118,7 +119,7 @@ func (s *RestoreService) restoreContainer(ctx context.Context, containerName str
     return s.processRestore(ctx, containerName, backup)
 }
 
-func (s *RestoreService) processRestore(ctx context.Context, containerName string, backup *DriveBackup) error {
+func (s *RestoreService) processRestore(ctx context.Context, containerName string, backup *gdrive.DriveBackup) error {
     startTime := time.Now()
     s.logger.Info("Starting restore process for container: %s", containerName)
     s.logger.Info("Using backup: %s (Created: %s, Size: %.2f MB)",
@@ -166,10 +167,10 @@ func (s *RestoreService) processRestore(ctx context.Context, containerName strin
 }
 
 // Helper function to find backup closest to specified date
-func findClosestBackup(backups []*DriveBackup, targetDate time.Time) *DriveBackup {
+func findClosestBackup(backups []*gdrive.DriveBackup, targetDate time.Time) *gdrive.DriveBackup {
     targetDate = time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, targetDate.Location())
 
-    var closest *DriveBackup
+    var closest *gdrive.DriveBackup
     var minDiff time.Duration
     for _, backup := range backups {
         diff := backup.CreatedTime.Sub(targetDate)
