@@ -112,3 +112,49 @@ services:
     restart: "no"
     env_file:
       - .env
+
+  do-restore-service:
+    image: do-gg-restore:latest
+    build:
+      context: .
+      dockerfile: do-restore-service/Dockerfile
+    volumes:
+      - ./temp:/app/temp
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.json:/app/token.json
+    environment:
+      # Google Drive Configuration
+      - GOOGLE_CREDENTIALS_PATH=/app/credentials.json
+      - GOOGLE_TOKEN_PATH=/app/token.json
+      - GOOGLE_SHARED_DRIVE_ID=${GOOGLE_SHARED_DRIVE_ID}
+      - GOOGLE_FOLDER_ID=${GOOGLE_FOLDER_ID}
+
+      # DigitalOcean Spaces Configuration
+      - SPACES_ENDPOINT=${SPACES_ENDPOINT:-"https://sgp1.digitaloceanspaces.com"}
+      - SPACES_REGION=${SPACES_REGION:-"sgp1"}
+      - SPACES_ACCESS_KEY_ID=${SPACES_ACCESS_KEY_ID}
+      - SPACES_SECRET_ACCESS_KEY=${SPACES_SECRET_ACCESS_KEY}
+      - SPACES_BUCKET_NAME=${SPACES_BUCKET_NAME}
+
+      # Restore Configuration
+      - TEMP_DIR=/app/temp
+      - RESTORE_CONTAINER_NAME=${RESTORE_CONTAINER_NAME}
+
+      # Application Configuration
+      - TZ=${TZ:-Asia/Ho_Chi_Minh}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ENABLE_METRICS=${ENABLE_METRICS:-true}
+      - METRICS_PORT=${METRICS_PORT:-9090}
+    deploy:
+      resources:
+        limits:
+          cpus: '${CPU_LIMIT:-1}'
+          memory: ${MEMORY_LIMIT:-1g}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: "no"
+    env_file:
+      - .env

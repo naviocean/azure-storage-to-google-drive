@@ -149,7 +149,7 @@ func (s *GoogleDriveService) ListAvailableBackups() ([]*DriveBackup, error) {
             s.logger.Debug("Found backup: %s (Created: %s, Size: %s)",
                 file.Name,
                 createdTime.Format(time.RFC3339),
-                formatBytes(file.Size))
+                utils.FormatBytes(file.Size))
         }
 
         pageToken = fileList.NextPageToken
@@ -223,7 +223,7 @@ func (s *GoogleDriveService) GetLatestBackup(containerName string) (*DriveBackup
     s.logger.Info("Found latest backup: %s (Created: %s, Size: %s)",
         file.Name,
         createdTime.Format(time.RFC3339),
-        formatBytes(file.Size))
+        utils.FormatBytes(file.Size))
 
     return &DriveBackup{
         ID:          file.Id,
@@ -274,7 +274,7 @@ func (s *GoogleDriveService) GetBackupFromDate(date time.Time, containerName str
     s.logger.Info("Found backup from date %s: %s (Size: %s)",
         date.Format("2006-01-02"),
         file.Name,
-        formatBytes(file.Size))
+        utils.FormatBytes(file.Size))
 
     return &DriveBackup{
         ID:          file.Id,
@@ -318,26 +318,9 @@ func (s *GoogleDriveService) DownloadFile(ctx context.Context, fileID string, de
 
     duration := time.Since(startTime)
     speed := float64(written) / duration.Seconds() / 1024 / 1024 // MB/s
-    s.logger.Info("Download completed: %s (%.2f MB/s)", formatBytes(written), speed)
+    s.logger.Info("Download completed: %s (%.2f MB/s)", utils.FormatBytes(written), speed)
 
     return nil
-}
-
-// ProgressReader wraps an io.Reader to provide progress updates
-type ProgressReader struct {
-    io.Reader
-    total     int64
-    uploaded  int64
-    onProgress func(uploaded, total int64)
-}
-
-func (pr *ProgressReader) Read(p []byte) (int, error) {
-    n, err := pr.Reader.Read(p)
-    pr.uploaded += int64(n)
-    if pr.onProgress != nil {
-        pr.onProgress(pr.uploaded, pr.total)
-    }
-    return n, err
 }
 
 func (s *GoogleDriveService) UploadBackup(ctx context.Context, zipPath string, containerName string) error {
@@ -383,15 +366,15 @@ func (s *GoogleDriveService) UploadBackup(ctx context.Context, zipPath string, c
     }
 
     startTime := time.Now()
-    s.logger.Info("Starting upload of %s (%s)", filepath.Base(zipPath), formatBytes(fileInfo.Size()))
+    s.logger.Info("Starting upload of %s (%s)", filepath.Base(zipPath), utils.FormatBytes(fileInfo.Size()))
 
     // Create progress reader
-    progressReader := &ProgressReader{
+    progressReader := &utils.ProgressReader{
         Reader: file,
-        total:  fileInfo.Size(),
-        onProgress: func(uploaded, total int64) {
+        Total:  fileInfo.Size(),
+        OnProgress: func(uploaded, total int64) {
             if uploaded == total {
-                return // Skip 100% progress as we'll show completion message
+                return // Skip 100% progress
             }
             percent := float64(uploaded) / float64(total) * 100
             elapsed := time.Since(startTime)
@@ -413,7 +396,7 @@ func (s *GoogleDriveService) UploadBackup(ctx context.Context, zipPath string, c
 
     s.logger.Info("Upload completed: %s (%s, %.2f MB/s)",
         result.Name,
-        formatBytes(fileInfo.Size()),
+        utils.FormatBytes(fileInfo.Size()),
         speed)
     return nil
 }
@@ -478,18 +461,4 @@ func (s *GoogleDriveService) ListAvailableFolders() error {
     }
 
     return nil
-}
-
-// Helper function to format bytes
-func formatBytes(bytes int64) string {
-    const unit = 1024
-    if bytes < unit {
-        return fmt.Sprintf("%d B", bytes)
-    }
-    div, exp := int64(unit), 0
-    for n := bytes / unit; n >= unit; n /= unit {
-        div *= unit
-        exp++
-    }
-    return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
